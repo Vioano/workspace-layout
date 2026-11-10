@@ -1,0 +1,11 @@
+# Backend notes
+
+The Python CLI validates window and workspace selection, computes rectangles within the display's usable frame, and sends a JSON request to the native helper. The helper is compiled locally as `scripts/windowbridge` on the first run or after its source changes.
+
+The helper reads window metadata from Core Graphics and Spaces metadata from SkyLight. It uses the SkyLight bridge for cross-Space moves, based on [yabai's Space manager](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/space_manager.c). Accessibility changes window positions and sizes. Inactive-Space windows may be absent from the usual Accessibility list, so the helper uses [yabai's window lookup approach](https://github.com/asmvik/yabai/blob/dd845723416f5fe92af49fad5ebab00369e07edd/src/window_manager.c) to match a window in the authorized process. The local cache at `~/.cache/codex-workspace-layout/ax-tokens.json` records process IDs, window IDs, and element identifiers. No window images or document contents are cached.
+
+The helper checks window ownership and verifies destination Space and geometry after changes. An app can impose a minimum window size. Try larger cells if it cannot reach the requested rectangle. Geometry checks allow two points of rounding. A batch can partially succeed, so read back the current state before retrying a failed batch.
+
+To create a document window out of view, `open` uses a non-activating launch configuration and may temporarily hide the target app. The destination must be inactive, and the app must have no visible ordinary window on an active Space. If opening or moving fails, the app may stay hidden to keep an unplaced window out of view. Inspect the remaining windows with `list`. If a file is already open, place its existing window by ID. Restore app visibility when you are ready to view its windows.
+
+The tool does not adjust macOS privacy settings, SIP, or Space preferences. `accessibility` reports whether the helper has Accessibility access, and `bridgedMoveAvailable` reports whether the required bridge exists. Apple silicon macOS 27.0 was exercised with PowerPoint and Finder windows. Document opening was exercised with PowerPoint. After a macOS update, check capability output and actual results on an authorized window before relying on the workflow.
