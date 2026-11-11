@@ -1,19 +1,50 @@
 ---
 name: workspace-layout
-description: Arrange, move, tile, and open document windows in the background across macOS Spaces. Use for organizing desktops, adjusting window gaps or primary-window sizes, and preparing a workspace for the user to visit when ready.
+description: Background macOS window placement without switching the user's Space or focus. Use before native desktop automation; identify apps by name and keep their workspace in one call. Files, connectors and browser DOM tasks need no desktop scan.
 ---
 
 # Workspace Layout
 
-Use [scripts/workspace_layout.py](scripts/workspace_layout.py) with Python 3. Resolve its path relative to this skill. The user's instructions determine which applications, windows, files, and workspaces you may change.
+## Quick start
 
-1. Run `list` with `--app <bundle-id>` or `--windows <id,id>` to identify the authorized windows and the destination. Use `--titles` only if document names are needed. Use the returned Desktop `index` for `--workspace` and `--from-workspace`. Obtain fresh IDs when the desktop arrangement changes.
-2. Use `move` to relocate windows and `arrange` to tile them. `--from-workspace` scopes the source. `--require-empty` checks that the destination has no ordinary windows. For in-place tiling, specify the existing workspace and the app or window IDs. Use `--dry-run` when a placement needs review.
-3. Choose readable window sizes. `--main` selects the primary window for `main-left` or `main-right`, `--ratio` sets its share, and `--gap` and `--margin` set spacing in points. Use `grid`, `columns`, or `rows` for parallel views. For an existing left-one/right-two arrangement, a `main-left` ratio of `.39` gives more room to the two windows on the right.
-4. Check the resulting Spaces and bounds in `results`. Compare `context_unchanged` and, for document opening, `open_context_unchanged`. A changed context can reflect user activity. Leave the user's focus where it is. If background placement is unavailable or incomplete, explain the concrete blocker before any foreground intervention.
+A self-contained window request uses live runtime state. Do not search project history or memory to identify current windows or learn this command.
 
-`open` takes a local `--file`, an `--app`, and an inactive `--workspace`. Use `--arrange-existing` when the user also wants to tile existing windows of that app there. To reuse one existing window's rectangle, pass `--slot-of <window-id>` and `--park-workspace <empty-desktop-index>`. The displaced document remains open. The command checks for target app windows visible on active Spaces before temporarily hiding the app.
+Choose the route before opening or observing a native window:
 
-`place --rect x,y,width,height` sets one window's rectangle. `apply --plan path.json` accepts entries like `[{"window":1234,"workspace":2,"rect":[0,0,0.6,1]}]`. Rectangles are relative to the display's usable frame. Omit `rect` for a move without resizing.
+| Task | Route |
+| --- | --- |
+| Files, connector, or content API | Use that interface directly; no desktop scan. |
+| Browser page | Use the in-app browser, scoped to the authorized tab. |
+| Inspect current window distribution | `state --app "Name"`; returns metadata without titles or content. |
+| Move or tile existing native windows | Call the command below directly. The tool resolves names, IDs, workspace and final geometry. |
+| Create a native window or expected dialog | Bind its destination before triggering it; see the boundary below. |
 
-Keep the user's normal work uninterrupted. Use scoped metadata and background placement, and let the user switch to the prepared Space. Follow their app exclusions and privacy limits. See [the README](README.md) for examples and [the backend notes](references/backend.md) when investigating compatibility.
+Ordinary layout recipes are complete here; do not run `--help`, inspect source, or query windows to reconfirm them:
+
+- Equal-width side by side: `--layout columns`.
+- Equal-height stacked: `--layout rows`.
+- One large window beside smaller ones: `--layout main-left` or `main-right`, plus `--main`.
+
+The tool counts selected windows. `columns` needs no `--columns N`; that option only customizes a grid.
+
+For “make the right window more important”, one call suffices:
+
+```sh
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/workspace-layout/scripts/workspacectl.py" arrange --workspace keep --app "PowerPoint" --layout main-right --main rightmost --ratio .60
+```
+
+Replace the app name with the authorized app. No bundle ID, window ID, desktop number, source inspection, preliminary screenshot or separate `state` call is needed when its windows occupy one workspace. `keep` preserves that workspace. Ambiguous app names or multiple workspaces return candidates; use scoped `state --app "Name"` only when needed. Never guess or switch desktops to discover them.
+
+Set only the needed parameters: `--layout auto|main-left|main-right|columns|rows|grid`, `--main leftmost|rightmost|topmost|bottommost|newest|ID`, `--ratio .20..80`. Default gap is 4 points, margin 12. Preserve known spacing. For explicitly authorized relocation, use `--workspace N`, or `--from-workspace N --workspace auto` for a confirmed empty inactive desktop. Desktop indices are not Space IDs.
+
+The service starts automatically. Read `ok`, `results`, `context_unchanged`, `client_elapsed_ms`, `deadline_met`, and `completion_scope`. Success must include actual geometry/Space readback; a queued request is not completion. Do not read implementation or other references for a normal successful call.
+
+## Boundaries
+
+Never activate/raise apps, switch Spaces, send global input, or capture unrelated content as a fallback. Never target WeChat (`com.tencent.xinWeChat`); its presence does not block other apps. Only authorized apps, windows and files are in scope.
+
+New windows and expected dialogs must be bound **before** the trigger. A reservation, process assignment, `activates=false`, or hiding does not prove safe creation. Generic `open` is disabled. Use a verified application adapter or file-processing route; resolve technical failures without asking the user to foreground a window or switch desktops. Read [backend details](references/backend.md) only when implementing such an adapter or diagnosing an actual failure.
+
+A context change during a batch stops remaining changes. Read scoped state and handle the affected step without blindly replaying or restoring an earlier focus. A different earlier snapshot alone does not prove focus theft; before/after equality also does not exclude a transient change. Keep failed and over-one-second results.
+
+Measure two things separately: native execution latency, and a fresh agent's time/tool calls from task receipt to its first correct action. A fast command after a detailed briefing proves only the first. See [measured scope and failures](references/benchmark-results.md) when reporting performance, not before ordinary operation.

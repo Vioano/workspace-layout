@@ -4,6 +4,7 @@
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <mach-o/nlist.h>
+#import <sys/resource.h>
 
 static int (*connection)(void);
 static CFArrayRef (*managed)(int);
@@ -41,9 +42,7 @@ static void *localSymbol(const char *wanted) {
 }
 
 static void fail(NSString *message) {
-    NSData *data=[NSJSONSerialization dataWithJSONObject:@{@"ok":@NO,@"error":message} options:0 error:nil];
-    puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
-    exit(1);
+    @throw [NSException exceptionWithName:@"WindowBridgeError" reason:message userInfo:nil];
 }
 static NSArray *spaces(uint32_t wid) {
     CFArrayRef value=windowSpaces(cid,7,(__bridge CFArrayRef)@[@(wid)]);
@@ -87,8 +86,17 @@ static BOOL regular(NSDictionary *w) {
 static NSDictionary *context(void) {
     NSMutableArray *active=[NSMutableArray array];
     for (NSDictionary *d in displays()) [active addObject:d[@"Current Space"][@"ManagedSpaceID"] ?: @0];
-    NSRunningApplication *front=NSWorkspace.sharedWorkspace.frontmostApplication;
-    return @{@"activeSpaces":active,@"frontPID":@(front.processIdentifier),@"frontApp":front.bundleIdentifier ?: @""};
+    // A stream can wait on stdin while AppKit activation notifications queue.
+    // Ask Process Manager for the current PID rather than treating the
+    // NSWorkspace notification cache as a synchronous foreground observation.
+    ProcessSerialNumber psn={0,0};pid_t frontPID=0;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    OSStatus first=GetFrontProcess(&psn);
+    OSStatus second=first==noErr ? GetProcessPID(&psn,&frontPID) : first;
+#pragma clang diagnostic pop
+    NSRunningApplication *front=second==noErr ? [NSRunningApplication runningApplicationWithProcessIdentifier:frontPID] : nil;
+    return @{@"activeSpaces":active,@"frontPID":@(second==noErr ? frontPID : 0),@"frontApp":front.bundleIdentifier ?: @"",@"front_source":@"process_manager",@"front_status":@(second)};
 }
 static BOOL appHidden(NSRunningApplication *app,BOOL hidden) {
     AXUIElementRef element=AXUIElementCreateApplication(app.processIdentifier);
@@ -165,7 +173,50 @@ static NSDictionary *screenFrame(NSDictionary *display) {
     }
     return @{};
 }
-int main(int argc,const char **argv) { @autoreleasepool {
+static NSDictionary *describeAX(AXUIElementRef element, int depth) {
+    NSMutableDictionary *result = [NSMutableDictionary dictionary];
+    for (NSString *name in @[@"AXRole", @"AXSubrole", @"AXTitle", @"AXValue", @"AXEnabled"]) {
+        CFTypeRef value = NULL;
+        if (AXUIElementCopyAttributeValue(element, (__bridge CFStringRef)name, &value) == kAXErrorSuccess && value) {
+            if (CFGetTypeID(value) == CFStringGetTypeID() || CFGetTypeID(value) == CFBooleanGetTypeID() || CFGetTypeID(value) == CFNumberGetTypeID()) result[name] = (__bridge id)value;
+            CFRelease(value);
+        }
+    }
+    if (depth > 0) {
+        CFTypeRef children = NULL;
+        if (AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &children) == kAXErrorSuccess && children) {
+            NSMutableArray *items = [NSMutableArray array];
+            for (id child in (__bridge NSArray *)children) {
+                if (items.count >= 30) break;
+                [items addObject:describeAX((__bridge AXUIElementRef)child, depth - 1)];
+            }
+            result[@"children"] = items;
+            CFRelease(children);
+        }
+    }
+    return result;
+}
+static AXUIElementRef findDialogButton(AXUIElementRef element, NSString *title, int depth) {
+    CFTypeRef role = NULL, name = NULL;
+    AXUIElementCopyAttributeValue(element, kAXRoleAttribute, &role);
+    AXUIElementCopyAttributeValue(element, kAXTitleAttribute, &name);
+    BOOL matches = role && name && CFEqual(role, kAXButtonRole) && [(__bridge id)name isEqual:title];
+    if (role) CFRelease(role);
+    if (name) CFRelease(name);
+    if (matches) return (AXUIElementRef)CFRetain(element);
+    if (depth <= 0) return NULL;
+    CFTypeRef children = NULL;
+    AXUIElementRef found = NULL;
+    if (AXUIElementCopyAttributeValue(element, kAXChildrenAttribute, &children) == kAXErrorSuccess && children) {
+        for (id child in (__bridge NSArray *)children) {
+            found = findDialogButton((__bridge AXUIElementRef)child, title, depth - 1);
+            if (found) break;
+        }
+        CFRelease(children);
+    }
+    return found;
+}
+static void initializeBridge(void) {
     void *lib=dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",RTLD_LAZY);
     connection=dlsym(lib,"SLSMainConnectionID");managed=dlsym(lib,"SLSCopyManagedDisplaySpaces");windowSpaces=dlsym(lib,"SLSCopySpacesForWindows");
     bridgeOperation=dlsym(lib,"SLSPerformAsynchronousBridgedWindowManagementOperation");
@@ -178,83 +229,106 @@ int main(int argc,const char **argv) { @autoreleasepool {
     tokenCache=[[NSJSONSerialization JSONObjectWithData:[NSData dataWithContentsOfFile:cachePath] ?: [NSData data] options:NSJSONReadingMutableContainers error:nil] mutableCopy] ?: [NSMutableDictionary dictionary];
     if (!connection || !managed || !windowSpaces) fail(@"Window metadata interfaces unavailable");
     cid=connection();
-    NSData *input=[NSFileHandle.fileHandleWithStandardInput readDataToEndOfFile];
+}
+static NSDictionary *handleRequest(NSData *input) {
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0, true);
     NSDictionary *request=[NSJSONSerialization JSONObjectWithData:input options:0 error:nil];
     if (![request isKindOfClass:NSDictionary.class]) fail(@"Expected a JSON request on stdin");
     NSArray *ws=windows();
     NSMutableDictionary *output=[@{@"ok":@YES,@"context":context(),@"accessibility":@(AXIsProcessTrusted()),@"bridgedMoveAvailable":@(bridgeOperation!=NULL && NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation")!=Nil)} mutableCopy];
     if ([request[@"command"] isEqual:@"snapshot"]) {
         NSMutableArray *ss=[NSMutableArray array],*ww=[NSMutableArray array];
+        NSMutableDictionary *membership=[NSMutableDictionary dictionary],*counts=[NSMutableDictionary dictionary],*appIDs=[NSMutableDictionary dictionary],*appNames=[NSMutableDictionary dictionary];
+        for (NSDictionary *w in ws) {
+            NSNumber *wid=w[(id)kCGWindowNumber];
+            NSArray *owned=spaces(wid.unsignedIntValue);
+            membership[wid]=owned;
+            if (regular(w)) for (NSNumber *sid in owned) counts[sid]=@([counts[sid] unsignedIntegerValue]+1);
+        }
         int index=0;
         for (NSDictionary *d in displays()) for (NSDictionary *s in d[@"Spaces"]) {
             NSNumber *sid=s[@"ManagedSpaceID"] ?: s[@"id64"];
-            NSUInteger count=0;
-            for (NSDictionary *w in ws) if (regular(w) && [spaces([w[(id)kCGWindowNumber] unsignedIntValue]) containsObject:sid]) count++;
+            NSUInteger count=[counts[sid] unsignedIntegerValue];
             [ss addObject:@{@"index":@(++index),@"id":sid,@"type":s[@"type"] ?: @0,@"count":@(count),@"display":d[@"Display Identifier"] ?: @"",@"frame":screenFrame(d)}];
         }
         NSArray *apps=request[@"apps"] ?: @[];
+        BOOL allMetadata = [request[@"all_windows_metadata"] boolValue];
+        NSUInteger order = 0;
         for (NSDictionary *w in ws) {
-            NSString *app=bundle(w);
-            if ((![apps containsObject:app] && ![request[@"ids"] containsObject:w[(id)kCGWindowNumber]]) || !regular(w)) continue;
-            NSMutableDictionary *v=[@{@"id":w[(id)kCGWindowNumber],@"pid":w[(id)kCGWindowOwnerPID],@"app":app,@"spaces":spaces([w[(id)kCGWindowNumber] unsignedIntValue]),@"bounds":w[(id)kCGWindowBounds]} mutableCopy];
+            NSNumber *pid=w[(id)kCGWindowOwnerPID];
+            NSString *app=appIDs[pid];
+            if (!app) {
+                NSRunningApplication *owner=[NSRunningApplication runningApplicationWithProcessIdentifier:pid.intValue];
+                app=owner.bundleIdentifier ?: @"";appIDs[pid]=app;
+                appNames[pid]=owner.localizedName ?: w[(id)kCGWindowOwnerName] ?: @"";
+            }
+            NSUInteger zOrder = order++;
+            if (!allMetadata && (![apps containsObject:app] && ![request[@"ids"] containsObject:w[(id)kCGWindowNumber]])) continue;
+            if (!allMetadata && !regular(w)) continue;
+            NSDictionary *rect = w[(id)kCGWindowBounds];
+            if ([rect[@"Width"] doubleValue] <= 0 || [rect[@"Height"] doubleValue] <= 0) continue;
+            NSMutableDictionary *v=[@{@"id":w[(id)kCGWindowNumber],@"pid":w[(id)kCGWindowOwnerPID],@"app":app,@"spaces":membership[w[(id)kCGWindowNumber]] ?: @[],@"bounds":w[(id)kCGWindowBounds]} mutableCopy];
+            v[@"app_name"]=appNames[pid] ?: @"";
+            v[@"owner_name"]=w[(id)kCGWindowOwnerName] ?: @"";
+            v[@"z_order"] = @(zOrder);
+            v[@"layer"] = w[(id)kCGWindowLayer] ?: @0;
+            v[@"on_screen"] = @([w[(id)kCGWindowIsOnscreen] boolValue]);
+            v[@"alpha"] = w[(id)kCGWindowAlpha] ?: @0;
+            v[@"window_type"] = regular(w) ? @"ordinary" : @"panel_or_system";
+            v[@"window_type_source"] = @"window_server_geometry_and_layer";
             if ([request[@"titles"] boolValue]) v[@"title"]=w[(id)kCGWindowName] ?: @"";
             [ww addObject:v];
         }
         output[@"spaces"]=ss;output[@"windows"]=ww;
-    } else if ([request[@"command"] isEqual:@"open"]) {
-        NSString *appID=request[@"app"];NSNumber *destination=request[@"toSpace"];
-        if ([appID isEqual:@"com.tencent.xinWeChat"]) fail(@"WeChat is protected");
-        if (!userSpace(destination) || !bridgeOperation || !NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation")) fail(@"Background workspace movement is unavailable for this destination");
-        NSArray *activeSpaces = context()[@"activeSpaces"];
-        if ([activeSpaces containsObject:destination]) fail(@"Background open requires an inactive target workspace");
-        NSURL *application=[NSWorkspace.sharedWorkspace URLForApplicationWithBundleIdentifier:appID];
-        if (!application) fail(@"Requested application is not installed");
-        NSRunningApplication *running=[NSRunningApplication runningApplicationsWithBundleIdentifier:appID].firstObject;
-        if (running.active) fail(@"Requested application is in use; background open will not hide or take over it");
-        BOOL wasHidden=running.hidden;
-        NSMutableSet *old=[NSMutableSet set];for (NSDictionary *w in ws) if ([bundle(w) isEqual:appID]) [old addObject:w[(id)kCGWindowNumber]];
-        NSMutableArray *urls=[NSMutableArray array];for (NSString *file in request[@"files"]) [urls addObject:[NSURL fileURLWithPath:file]];
-        if (!urls.count) fail(@"No documents requested");
-        if (running && !wasHidden) {
-            if (appHasWindowOnSpaces(ws, appID, activeSpaces, YES)) {
-                fail(@"Requested application has a visible window on an active workspace");
-            }
-            if (!appHidden(running, YES)) fail(@"Application could not be kept hidden during background document creation");
+    } else if ([request[@"command"] isEqual:@"inspect_window"] || [request[@"command"] isEqual:@"press_dialog_button"]) {
+        uint32_t wid = [request[@"id"] unsignedIntValue];
+        pid_t pid = [request[@"pid"] intValue];
+        NSDictionary *match = nil;
+        for (NSDictionary *w in ws) if ([w[(id)kCGWindowNumber] unsignedIntValue] == wid) match = w;
+        if (!match || [match[(id)kCGWindowOwnerPID] intValue] != pid || ![bundle(match) isEqual:request[@"app"]] || [bundle(match) isEqual:@"com.tencent.xinWeChat"]) fail(@"Task window identity did not match");
+        AXUIElementRef target = findAX(pid, wid);
+        if (!target) fail(@"Task window is unavailable to Accessibility");
+        if ([request[@"command"] isEqual:@"press_dialog_button"]) {
+            CFTypeRef subrole = NULL;
+            AXUIElementCopyAttributeValue(target, kAXSubroleAttribute, &subrole);
+            BOOL dialog = subrole && CFEqual(subrole, kAXDialogSubrole);
+            if (subrole) CFRelease(subrole);
+            if (!dialog) fail(@"Target is not a task dialog");
+            AXUIElementRef button = findDialogButton(target, request[@"title"], 5);
+            if (!button) fail(@"Requested dialog button was not found");
+            AXError status = AXUIElementPerformAction(button, kAXPressAction);
+            CFRelease(button);
+            if (status) fail(@"Task dialog action failed");
+            output[@"action"] = @"pressed_named_dialog_button";
+            output[@"afterContext"] = context();
+        } else output[@"window"] = describeAX(target, 5);
+        CFRelease(target);
+    } else if ([request[@"command"] isEqual:@"bind_process"]) {
+        pid_t pid = [request[@"pid"] intValue];
+        NSString *appID = request[@"app"];
+        NSNumber *destination = request[@"toSpace"];
+        NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
+        if (!app || ![app.bundleIdentifier isEqualToString:appID] || [appID isEqualToString:@"com.tencent.xinWeChat"]) fail(@"Process identity is unavailable or protected");
+        if ([output[@"context"][@"front_status"] intValue] != noErr) fail(@"Current foreground identity is unavailable; no process binding submitted");
+        if ([output[@"context"][@"frontPID"] intValue] == pid || !userSpace(destination)) fail(@"Process binding requires an inactive process and an ordinary destination Space");
+        for (NSDictionary *window in ws) {
+            if ([window[(id)kCGWindowOwnerPID] intValue] != pid || !regular(window)) continue;
+            NSArray *current = spaces([window[(id)kCGWindowNumber] unsignedIntValue]);
+            if (current.count && ![current isEqual:@[destination]]) fail(@"Process has an existing window in another Space");
         }
-        NSWorkspaceOpenConfiguration *config=NSWorkspaceOpenConfiguration.configuration;
-        config.activates=NO;config.hides=YES;config.addsToRecentItems=NO;
-        __block BOOL completed=NO;__block NSError *openError=nil;__block NSRunningApplication *openedApp=nil;
-        [NSWorkspace.sharedWorkspace openURLs:urls withApplicationAtURL:application configuration:config completionHandler:^(NSRunningApplication *app,NSError *error){openedApp=app;openError=error;completed=YES;}];
-        NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:12];
-        NSMutableArray *created=[NSMutableArray array];
-        while (deadline.timeIntervalSinceNow>0) {
-            [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.02]];
-            [created removeAllObjects];
-            for (NSDictionary *w in windows()) if (regular(w) && [bundle(w) isEqual:appID] && ![old containsObject:w[(id)kCGWindowNumber]]) [created addObject:w[(id)kCGWindowNumber]];
-            if (completed && (openError || created.count >= urls.count)) break;
-        }
-        if (!completed || openError || created.count < urls.count) {
-            NSString *message = openError ? openError.localizedDescription : @"Expected new document windows did not appear. An already open file may need to be placed by window ID";
-            if (running && !wasHidden && completed &&
-                !appHasWindowOnSpaces(windows(), appID, context()[@"activeSpaces"], NO) &&
-                appHidden(running, NO)) {
-                fail(message);
-            }
-            fail([message stringByAppendingString:@". The target application may still be hidden"]);
-        }
-        if (!bridgeOperation) fail(@"Background workspace movement unavailable; application remains hidden");
-        id cls=NSClassFromString(@"SLSBridgedMoveWindowsToManagedSpaceOperation");
-        id allocated=((id(*)(id,SEL))objc_msgSend)(cls,sel_registerName("alloc"));
-        id operation=((id(*)(id,SEL,id,uint64_t))objc_msgSend)(allocated,sel_registerName("initWithWindows:spaceID:"),created,[destination unsignedLongLongValue]);
+        Class operationClass = NSClassFromString(@"SLSBridgedProcessAssignToSpaceOperation");
+        SEL initializer = sel_registerName("initWithProcess:spaceID:");
+        if (!bridgeOperation || ![operationClass instancesRespondToSelector:initializer]) fail(@"Process Space binding is unavailable");
+        id allocated = ((id(*)(id,SEL))objc_msgSend)(operationClass, sel_registerName("alloc"));
+        id operation = ((id(*)(id,SEL,int,uint64_t))objc_msgSend)(allocated, initializer, pid, destination.unsignedLongLongValue);
         bridgeOperation(operation);
-        for (NSNumber *wid in created) {
-            NSDate *end=[NSDate dateWithTimeIntervalSinceNow:2];
-            while (![spaces(wid.unsignedIntValue) isEqual:@[destination]] && end.timeIntervalSinceNow>0) [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.01]];
-            if (![spaces(wid.unsignedIntValue) isEqual:@[destination]]) fail(@"New window was not placed in its target workspace; application remains hidden");
-        }
-        if (!wasHidden && !appHidden((running ?: openedApp),NO)) fail(@"New windows were placed but application could not be unhidden");
-        output[@"newWindows"]=created;output[@"afterContext"]=context();
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.03]];
+        output[@"binding"] = @{@"pid":@(pid),@"space_id":destination,@"state":@"submitted",@"future_window_verified":@NO};
+        output[@"afterContext"] = context();
+    } else if ([request[@"command"] isEqual:@"open"]) {
+        fail(@"Generic document opening is disabled: use a controlled application adapter with workspace binding before window creation");
     } else if ([request[@"command"] isEqual:@"apply"]) {
+        if ([output[@"context"][@"front_status"] intValue] != noErr) fail(@"Current foreground identity is unavailable; no window changes sent");
         NSArray *changes=request[@"windows"];
         NSMutableDictionary *found=[NSMutableDictionary dictionary];
         for (NSDictionary *w in ws) found[w[(id)kCGWindowNumber]]=w;
@@ -269,6 +343,7 @@ int main(int argc,const char **argv) { @autoreleasepool {
         }
         NSMutableArray *results=[NSMutableArray array];
         for (NSDictionary *change in changes) {
+            if (![context() isEqual:output[@"context"]]) fail(@"Foreground context changed during the batch; remaining window changes were not sent. Read current state before continuing");
             uint32_t wid=[change[@"id"] unsignedIntValue];
             NSNumber *dest=change[@"toSpace"];
             if (dest && ![spaces(wid) isEqual:@[dest]]) {
@@ -290,12 +365,15 @@ int main(int argc,const char **argv) { @autoreleasepool {
                 NSDictionary *original=bounds(wid),*size=@{@"Width":@(z.width),@"Height":@(z.height)};
                 AXError a=AXUIElementSetAttributeValue(target,kAXSizeAttribute,sv);
                 awaitGeometry(wid,size,original,.18);
+                if (![context() isEqual:output[@"context"]]) { CFRelease(pv);CFRelease(sv);CFRelease(target);fail(@"Foreground context changed after resizing; remaining changes were not sent"); }
                 AXError b=AXUIElementSetAttributeValue(target,kAXPositionAttribute,pv);
                 awaitGeometry(wid,@{@"X":@(p.x),@"Y":@(p.y)},nil,.4);
+                if (![context() isEqual:output[@"context"]]) { CFRelease(pv);CFRelease(sv);CFRelease(target);fail(@"Foreground context changed after positioning; remaining changes were not sent"); }
                 AXError c=AXUIElementSetAttributeValue(target,kAXSizeAttribute,sv);
                 NSDictionary *goal=@{@"X":@(p.x),@"Y":@(p.y),@"Width":@(z.width),@"Height":@(z.height)};
                 BOOL finalOK=awaitGeometry(wid,goal,nil,.35);
                 if (!finalOK && !a && !b && !c) {
+                    if (![context() isEqual:output[@"context"]]) { CFRelease(pv);CFRelease(sv);CFRelease(target);fail(@"Foreground context changed before geometry correction; remaining changes were not sent"); }
                     // After opening, the app can constrain the first size to
                     // the old origin. Reposition the settled frame, then size.
                     b=AXUIElementSetAttributeValue(target,kAXPositionAttribute,pv);
@@ -311,7 +389,34 @@ int main(int argc,const char **argv) { @autoreleasepool {
         }
         output[@"results"]=results;output[@"afterContext"]=context();
     } else fail(@"Unknown command");
-    NSData *data=[NSJSONSerialization dataWithJSONObject:output options:NSJSONWritingPrettyPrinted error:nil];
+    return output;
+}
+static void writeResult(NSDictionary *result, BOOL pretty) {
+    struct rusage usage;getrusage(RUSAGE_SELF,&usage);
+    NSMutableDictionary *measured=[result mutableCopy];
+    double cpu=usage.ru_utime.tv_sec+usage.ru_stime.tv_sec+(usage.ru_utime.tv_usec+usage.ru_stime.tv_usec)/1e6;
+    measured[@"helper_usage"]=@{@"pid":@(getpid()),@"cpu_seconds":@(cpu),@"max_rss_bytes":@(usage.ru_maxrss)};
+    result=measured;
+    NSData *data=[NSJSONSerialization dataWithJSONObject:result options:pretty ? NSJSONWritingPrettyPrinted : 0 error:nil];
     puts([[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding].UTF8String);
-    return 0;
+    fflush(stdout);
+}
+int main(int argc,const char **argv) { @autoreleasepool {
+    @try { initializeBridge(); }
+    @catch (NSException *error) { writeResult(@{@"ok":@NO,@"error":error.reason ?: @"Native initialization failed"},NO);return 1; }
+    if (argc == 2 && !strcmp(argv[1], "--stream")) {
+        char *line=NULL;size_t capacity=0;ssize_t length;
+        while ((length=getline(&line,&capacity,stdin))>0) { @autoreleasepool {
+            @try { writeResult(handleRequest([NSData dataWithBytes:line length:length]),NO); }
+            @catch (NSException *error) { writeResult(@{@"ok":@NO,@"error":error.reason ?: @"Native request failed"},NO); }
+        }}
+        free(line);return 0;
+    }
+    @try {
+        writeResult(handleRequest([NSFileHandle.fileHandleWithStandardInput readDataToEndOfFile]),YES);
+        return 0;
+    } @catch (NSException *error) {
+        writeResult(@{@"ok":@NO,@"error":error.reason ?: @"Native request failed"},NO);
+        return 1;
+    }
 }}

@@ -1,63 +1,94 @@
 # Workspace Layout
 
-Workspace Layout is a Codex skill and local CLI for arranging windows across macOS Spaces. It lets an agent prepare a workspace while you keep working in your current app. Switch to the prepared desktop yourself when you are ready.
+A Codex skill and lightweight local service for arranging macOS windows while the user keeps working. An agent specifies the app, desktop and layout in one call. The service resolves window identities, reserves an empty inactive Space when requested, applies the layout, and reads back the actual result.
 
-[简体中文](README.zh-CN.md) · [Skill instructions](SKILL.md)
+[简体中文](README.zh-CN.md) · [Skill](SKILL.md) · [Backend](references/backend.md)
 
-| Task | What it does |
-| --- | --- |
-| Organize windows | Move selected windows to a specific desktop or tile them where they are. |
-| Change the emphasis | Give one window more room or widen the pair next to it. Set the split, spacing, and margins independently. |
-| Prepare a document | Open a local file on another desktop. Reuse an existing window's position and move the old window to an empty desktop while keeping its document open. |
-| Place windows precisely | Give individual windows a custom rectangle and destination in a JSON plan. |
+## What it does
 
-## Keep the user's desktop usable
+- Tile authorized windows in their current workspace, with a primary window and adjustable split, gaps and margins.
+- Move explicitly selected task windows to a confirmed empty inactive workspace.
+- Change which window is primary without dragging or searching again.
+- Cache workspace and window metadata locally: ownership, Space membership, bounds, layer, z-order and a geometry-based window-type classification.
+- Report actual completion time, verified geometry and whether foreground application and active Spaces changed.
 
-Every change targets a window ID or an explicitly selected application and workspace. The CLI uses window metadata and Accessibility to place windows in the background. It sends no keyboard or mouse events, takes no screenshots, and does not switch Spaces or activate the target application. Results include the observed window positions and whether the active Spaces and foreground app matched before and after the operation.
+It sends no keyboard or mouse events and takes no screenshots. WeChat window changes are blocked. Window titles and UI contents are absent from the service cache.
 
-Opening a file has a broader effect because the target app may need to be hidden briefly while macOS creates its window. The command requires a destination outside the active Spaces and checks for visible windows of the app on those Spaces before hiding it. Once the new windows reach their destination, it restores the app's prior visibility. An unsuccessful open can leave the app hidden if restoring it would expose windows on the current desktop. WeChat window changes are blocked.
+## Privacy of the background service
+
+The cache/API contains application names and bundle IDs, process/window IDs, Space membership, window coordinates and dimensions, layer/z-order, alpha, on-screen status and a geometry-based type. It also records the current foreground app/Space to protect focus, plus service timing/resource counters. It does not cache or return window titles, webpage URLs, document paths, text, screenshots, video content or keyboard input. Application names identify software, not the document or browser-tab title.
+
+The service has no arbitrary native-command passthrough. Explicit, separately scoped diagnostic helpers are not part of its polling/API. The cache stays in local memory; the AX-token file contains only process/window/element IDs. No network port or telemetry endpoint is opened by this service.
 
 ## Install
 
-Use an interactive macOS desktop, Python 3, and the Xcode Command Line Tools. The first run compiles the native helper with `clang`. Grant Accessibility to the terminal or agent host running the tool if macOS requires it for resizing or changing app visibility. The CLI reports the available capabilities in `list`.
-
-Window movement, tiling, and PowerPoint document opening were exercised on Apple silicon with macOS 27.0. Cross-Space movement uses private macOS interfaces, so availability can change with system updates. `bridgedMoveAvailable` reports whether the interface is present. The tool checks each requested move against the resulting Space.
+Requires an interactive macOS desktop, Python 3, Xcode Command Line Tools, and existing Accessibility permission for the calling host. The native helper compiles on first use. Private macOS APIs are used for Space membership and movement; compatibility must be checked after OS updates.
 
 ```sh
 git clone https://github.com/Vioano/workspace-layout.git "${CODEX_HOME:-$HOME/.codex}/skills/workspace-layout"
-cd "${CODEX_HOME:-$HOME/.codex}/skills/workspace-layout"
-python3 scripts/workspace_layout.py list
+python3 "${CODEX_HOME:-$HOME/.codex}/skills/workspace-layout/scripts/workspacectl.py" start
 ```
 
-Add this instruction to your user-level `AGENTS.md` if you want Codex to use the skill for window tasks.
+The client starts a per-user background service when needed. Its Unix socket is local, permission 0600; it does not listen on a network port. `stop` ends only this service. No login item, system preference or privacy permission is changed.
 
-> Use the workspace-layout skill for authorized macOS window movement, tiling, and background document opening. Identify the target windows and Space first. Keep my current desktop and input focus available, and let me switch to the prepared workspace myself. Read only the window metadata needed for the task. If background operation is unavailable, report the blocker before attempting anything that would interrupt my work.
+## One-call layouts
 
-## Examples
-
-From the checkout, define a short command for this shell session.
+Run from any project directory. Resolve the installed skill path once.
 
 ```sh
-layout() { python3 scripts/workspace_layout.py "$@"; }
-layout list --app com.microsoft.Powerpoint
-```
+layout() { python3 "${CODEX_HOME:-$HOME/.codex}/skills/workspace-layout/scripts/workspacectl.py" "$@"; }
 
-Use the Desktop `index` from `list` for `--workspace`. Replace the sample indices and window IDs below with values from your desktop. Add `--dry-run` to preview changes. Add `--titles` to `list` only when you need to identify particular documents.
+# Inspect only the authorized application's metadata.
+layout state --app com.microsoft.Powerpoint
 
-```sh
-# Move a presentation workspace from Desktop 5 to an empty Desktop 2 and tile it.
-layout arrange --from-workspace 5 --workspace 2 --app com.microsoft.Powerpoint \
-  --require-empty --layout main-left --main 1234 --ratio .55 --gap 4
+# Resolve the app and its existing workspace without window IDs.
+layout arrange --workspace keep --app PowerPoint \
+  --layout main-left --main rightmost --ratio .60 --gap 4
 
-# Widen the two windows on the right and keep the left window as a reference.
+# Relocate explicitly authorized task windows from Desktop 5.
+# auto selects an empty inactive desktop; it does not switch to it.
+layout arrange --from-workspace 5 --workspace auto --app com.microsoft.Powerpoint \
+  --layout main-left --task presentation-review
+
+# Use exact window IDs when the task identifies individual documents.
 layout arrange --workspace 2 --windows 1234,1235,1236 \
-  --layout main-left --main 1234 --ratio .39 --gap 4
-
-# Put a new deck in the old main window's rectangle and park the old deck.
-layout open --workspace 2 --app com.microsoft.Powerpoint --file ./next-deck.pptx \
-  --slot-of 1234 --park-workspace 8
+  --layout main-right --main 1235 --ratio .55 --gap 4 --margin 12
 ```
 
-Use `move` to keep existing window sizes, `place` for a single custom rectangle, or `apply --plan` for a set of placements. `--help` on each subcommand lists its options. See the [skill instructions](SKILL.md) for the plan format and [implementation notes](references/backend.md) for compatibility and recovery details.
+`--app` accepts an exact application name, bundle ID, or bundle suffix (case-insensitive). An ambiguous name returns candidates. `--workspace keep` requires the selected windows to occupy one ordinary Space; multiple Spaces return candidates without moving them.
 
-Released under the [MIT License](LICENSE). See [third-party notices](THIRD_PARTY_NOTICES.md) for attribution to yabai.
+Desktop indices come from `state`; they are not macOS Space IDs. `--dry-run` returns the plan. `--require-empty` refuses an occupied destination. `move` preserves sizes. `--main` accepts an exact ID or leftmost, rightmost, topmost, bottommost, newest. Reservations default to the project directory; `--task` shares a named reservation across directories.
+
+Inspect `ok`, `results`, `completion_scope`, `context_unchanged`, `client_elapsed_ms` and `deadline_met`. A successful geometry operation includes actual destination and rectangle readback. The client marks a call over 1,000 ms as missing the deadline, even if it eventually completes. This timing includes the local client and service work; model and network time are outside it. A queued request, reservation or submitted process binding is not completion.
+
+## New windows and dialogs
+
+A destination must be bound **before** triggering a new application window, document window or expected dialog. Moving it afterward still interrupts the user. `activates=false` and hiding an application did not provide this guarantee in testing.
+
+`prepare --workspace N --app <bundle-id> --pid <owned-worker-pid>` submits a process-to-Space binding for a dedicated inactive worker. It refuses a process with existing windows elsewhere. The response deliberately keeps `ready_for_window_creation:false`: the application adapter must verify creation behavior, native document identity and load state before claiming readiness.
+
+The old generic document `open` command is disabled because it used placement after creation. There is no universal safe-open guarantee for arbitrary third-party applications. A controlled application API or file-processing route is required. Native document loading and export have separate completion states and timings; placing a window does not prove that the document is usable.
+
+## Agent integration
+
+Add to the user-level `AGENTS.md` (normally `~/.codex/AGENTS.md`):
+
+> Before authorized macOS app/window automation, use the workspace-layout skill. Prefer its persistent workspacectl entry, with explicit app/window scope, workspace and layout parameters. Keep the user's current Space, input focus and view uninterrupted. Bind a destination before creating windows or expected dialogs; reservations and submitted bindings are not proof. Verify final state and report actual timing. Resolve technical failures without asking the user to switch desktops or foreground windows. Never target WeChat or inspect unrelated content.
+
+User instructions still define authorization. The service cannot force unrelated tools or agents to follow a document, and AGENTS loading must be verified in the host. A project that deliberately isolates those instructions is outside this routing rule.
+
+## Agent onboarding speed
+
+Program latency and agent readiness are different measurements. The user-level AGENTS quick index points a fresh agent to this skill; its quick start accepts an app name and `keep`, so the agent need not discover bundle IDs, window IDs or desktop numbers.
+
+A fresh-context Luna trial received only the AGENTS path and a natural-language task. It made one batched documentation read and one successful action, with no source search, screenshot or preliminary window lookup. Dispatch to first action took 34.530 seconds including model/orchestration/network time, which was not separately measured. The complete command took 286.883 ms. A fast command must not be presented as an instant agent response. Detailed briefings in earlier Luna trials are not cold-onboarding evidence.
+
+## Compatibility and verification
+
+The native adapter has been exercised on Apple silicon, macOS 27.0. It validates window PID, bundle ID and source Space before mutation. Accessibility resize support depends on the target app and its minimum window size. Window type is a layer/geometry heuristic, not an authoritative Accessibility role. Before/after focus equality alone cannot prove that no transient change occurred; tests must retain failures and state the observation method.
+
+Latest controlled test: 100/100 completed layouts, median 178.505 ms, maximum 225.476 ms; idle daemon plus helper used 0.854% of one core and about 41.4 MB combined peak RSS. These are fixture measurements on one Mac. [All runs and failures](references/benchmark-results.md) remain available. A first startup after copying a rebuilt helper took 1,223.109 ms and missed the target; installation/cold costs are not hidden in the warm result.
+
+See [tests](tests/) for service regression checks. Performance measurements are bounded to their actual fixture and workload; they are not a promise that every application can launch, load a document or export within one second.
+
+Released under the [MIT License](LICENSE). [Third-party notices](THIRD_PARTY_NOTICES.md) attribute the SkyLight symbol lookup to yabai.

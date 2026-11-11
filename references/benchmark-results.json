@@ -1,0 +1,273 @@
+{
+  "latest_status": "controlled_fixture_v5_passed_general_goal_not_fully_verified",
+  "date": "2026-11-12",
+  "scope": "Synthetic owned fixture, one Apple Silicon Mac. No arbitrary-application or hard real-time guarantee.",
+  "clock": "External monotonic time includes Python CLI startup, UDS request, native action and actual final-state verification.",
+  "allocation": "Latest live run used an explicitly authorized inactive experiment Desktop. Auto allocation correctly refused earlier because no empty inactive Desktop existed. Auto reservation also has fake-backend regressions.",
+  "creation_findings": [
+    "Plain ordinary windows inherited the prebound process Space.",
+    "An inactive default NSPanel initially had no Space; revealing was blocked at alpha zero.",
+    "A floating NSPanel then joined all Spaces; revealing was again blocked at alpha zero.",
+    "Explicit Managed collection behavior allowed the owned NSPanel to verify a single Space before reveal.",
+    "The v4 mixed ordinary-window/panel stress run later observed foreground/active-Space changes. Cause remains under investigation.",
+    "A later bounded v5 run with real-time Process Manager foreground metadata, context-change stop guards, and own-app event-type auditing completed 100 actions without observed focus/Space changes. This does not establish the cause of v4 changes."
+  ],
+  "rows": [
+    {
+      "version": "v1",
+      "scope": "Three pre-existing owned ordinary windows; subprocess native helper, 4 Hz polling",
+      "passed": false,
+      "samples": 100,
+      "geometry_completed": 100,
+      "completed_under_1s": 99,
+      "latency": {
+        "samples": 100,
+        "min_ms": 374.525,
+        "median_ms": 457.365,
+        "p95_ms": 500.014,
+        "max_ms": 1391.275
+      },
+      "cold_api_ms": 182.033,
+      "state_latency": {
+        "samples": 30,
+        "min_ms": 37.763,
+        "median_ms": 38.867999999999995,
+        "p95_ms": 43.704,
+        "max_ms": 43.714
+      },
+      "idle_cpu_one_core_percent": 8.833906682483194,
+      "combined_peak_rss_bytes": null,
+      "monitor_samples": 1662,
+      "monitor_max_interval_ms": 40.18775001168251,
+      "observed_wrong_space_samples": 0,
+      "observed_fixture_foreground_samples": 0,
+      "observed_task_space_active_samples": 0
+    },
+    {
+      "version": "v2",
+      "scope": "Same three windows; identity-scoped cache and native snapshot optimization",
+      "passed": true,
+      "samples": 100,
+      "geometry_completed": 100,
+      "completed_under_1s": 100,
+      "latency": {
+        "samples": 100,
+        "min_ms": 209.979,
+        "median_ms": 249.8505,
+        "p95_ms": 321.447,
+        "max_ms": 332.946
+      },
+      "cold_api_ms": 146.544,
+      "state_latency": {
+        "samples": 30,
+        "min_ms": 36.429,
+        "median_ms": 37.4545,
+        "p95_ms": 42.225,
+        "max_ms": 45.045
+      },
+      "idle_cpu_one_core_percent": 6.810516969218627,
+      "combined_peak_rss_bytes": null,
+      "monitor_samples": 817,
+      "monitor_max_interval_ms": 45.26395833818242,
+      "observed_wrong_space_samples": 0,
+      "observed_fixture_foreground_samples": 0,
+      "observed_task_space_active_samples": 0
+    },
+    {
+      "version": "v3",
+      "scope": "Same three windows; persistent native helper, 4 Hz polling",
+      "passed": true,
+      "samples": 100,
+      "geometry_completed": 100,
+      "completed_under_1s": 100,
+      "latency": {
+        "samples": 100,
+        "min_ms": 134.476,
+        "median_ms": 174.053,
+        "p95_ms": 223.911,
+        "max_ms": 478.807
+      },
+      "cold_api_ms": 156.303,
+      "state_latency": {
+        "samples": 30,
+        "min_ms": 40.858,
+        "median_ms": 45.7565,
+        "p95_ms": 60.969,
+        "max_ms": 64.092
+      },
+      "idle_cpu_one_core_percent": 3.3669303797468353,
+      "combined_peak_rss_bytes": 41025536,
+      "monitor_samples": 669,
+      "monitor_max_interval_ms": 61.20466667925939,
+      "observed_wrong_space_samples": 0,
+      "observed_fixture_foreground_samples": 0,
+      "observed_task_space_active_samples": 0
+    },
+    {
+      "version": "v4",
+      "scope": "Three newly prebound ordinary windows and one managed NSPanel; persistent native helper, 1 Hz idle polling",
+      "passed": false,
+      "samples": 100,
+      "geometry_completed": 99,
+      "completed_under_1s": 96,
+      "latency": {
+        "samples": 100,
+        "min_ms": 124.494,
+        "median_ms": 167.9435,
+        "p95_ms": 706.563,
+        "max_ms": 2415.125
+      },
+      "cold_api_ms": 161.401,
+      "state_latency": {
+        "samples": 30,
+        "min_ms": 40.469,
+        "median_ms": 41.8455,
+        "p95_ms": 62.68,
+        "max_ms": 69.575
+      },
+      "idle_cpu_one_core_percent": 0.7955335968379444,
+      "combined_peak_rss_bytes": 41385984,
+      "monitor_samples": 911,
+      "monitor_max_interval_ms": 108.53337496519089,
+      "observed_wrong_space_samples": 0,
+      "observed_fixture_foreground_samples": 469,
+      "observed_task_space_active_samples": 485
+    },
+    {
+      "version": "v5",
+      "scope": "Three newly prebound ordinary windows plus managed NSPanel; persistent native helper, 1 Hz idle polling, real-time foreground metadata and stop-on-context-change guards",
+      "passed": true,
+      "samples": 100,
+      "geometry_completed": 100,
+      "completed_under_1s": 100,
+      "latency": {
+        "samples": 100,
+        "min_ms": 126.4,
+        "median_ms": 178.5045,
+        "p95_ms": 211.703,
+        "max_ms": 225.476
+      },
+      "cold_api_ms": 166.563,
+      "state_latency": {
+        "samples": 30,
+        "min_ms": 37.793,
+        "median_ms": 39.1715,
+        "p95_ms": 60.808,
+        "max_ms": 69.081
+      },
+      "idle_cpu_one_core_percent": 0.8536117158123885,
+      "combined_peak_rss_bytes": 41418752,
+      "monitor_samples": 656,
+      "monitor_max_interval_ms": 34.83399999095127,
+      "observed_wrong_space_samples": 0,
+      "observed_fixture_foreground_samples": 0,
+      "observed_task_space_active_samples": 0,
+      "own_fixture_input_and_activation_events": 0,
+      "sources_unchanged_during_test": true,
+      "source_sha256": {
+        "scripts/workspacectl.py": "a66441739467bd1cff6c43cf8d5b9efa02a719700bb7f16d8471954054387821",
+        "scripts/workspace_service.py": "5588bae99d34385e4b0c74fdac8a34c0d476f3da9cbc719ccc7e4a2b3799a19c",
+        "scripts/windowbridge.m": "2c499e451683a807bc700550a09c8112aadec977a07a70c681c91774d5b38622",
+        "tests/workspace_fixture.m": "f803072ca58a50b0500d306efc6baface4a1fecb5242660876c4bdd68ebaf0b5",
+        "tests/watch_fixture_metadata.m": "0e94b86f372b204a57a6f33439e285fb3bfd30f16e3d6a23e9b8a7f5b2fd1f70",
+        "tests/benchmark_owned_fixture.py": "35663cf3d90d52a3fb374f135648d3b396c9a011b318c011bffb375ab4df3663"
+      }
+    }
+  ],
+  "raw_evidence_policy": "Private machine metadata and raw samples remain in gitignored .local; aggregate results retain failures.",
+  "installation_start_observation": {
+    "client_elapsed_ms": 1223.109,
+    "deadline_met": false,
+    "scope": "First service start after copying newly rebuilt helper into installed skill path; separate from precompiled cold API and warm layouts."
+  },
+  "model_trials": [
+    {
+      "version": "luna-v2",
+      "model": "gpt-6-luna",
+      "scope": "Installed workspace-layout skill; three working directories; three owned existing fixture windows.",
+      "samples": 6,
+      "working_directory_count": 3,
+      "geometry_completed": 6,
+      "completed_under_1s": 6,
+      "passed": true,
+      "median_ms": 180.5984585,
+      "max_ms": 209.096958,
+      "host_loading_scope": "Does not establish automatic instruction or skill loading in every Codex host.",
+      "earlier_trial": "Luna v1 stopped after an observed context discrepancy; preserved, cause unresolved."
+    }
+  ],
+  "agent_onboarding": {
+    "scope": "Fresh fork-none gpt-6-luna low trials; only AGENTS location and natural-language task, with no IDs, Space numbers or API commands. Strict case4 excludes memory/history.",
+    "cases": [
+      {
+        "case": 1,
+        "task": "Prioritize rightmost existing window",
+        "top_level_calls_to_action": 2,
+        "extra_queries": [],
+        "dispatch_to_action_ms": 34530.312959,
+        "complete_command_ms": 286.883208,
+        "operation_correct": true
+      },
+      {
+        "case": 2,
+        "task": "Three equal-width columns",
+        "top_level_calls_to_action": 4,
+        "extra_queries": [
+          "arrange --help"
+        ],
+        "dispatch_to_action_ms": 38004.059875,
+        "complete_command_ms": 354.493042,
+        "operation_correct": true,
+        "cold_efficiency_pass": false
+      },
+      {
+        "case": 3,
+        "task": "Same columns task after explicit recipe added",
+        "top_level_calls_to_action": 2,
+        "extra_queries": [
+          "memory registry search, parallel in first batch"
+        ],
+        "dispatch_to_action_ms": 33971.451792,
+        "complete_command_ms": 205.310333,
+        "operation_correct": true,
+        "strict_docs_only_pass": false
+      },
+      {
+        "case": 4,
+        "task": "Read current PowerPoint window distribution without title/content or changes",
+        "top_level_calls_to_first_action": 2,
+        "extra_before_first_action": [],
+        "dispatch_to_first_action_ms": null,
+        "complete_timed_repeat_ms": 57.8295,
+        "operation_correct": true,
+        "recording_limitations": [
+          "Batch 2 raw output was not persisted verbatim. Batch 3 is the complete timed repeat and provides the current state readback. Batches 1 and 2 occurred before instrumentation was added, so no monotonic timestamps were captured for them."
+        ]
+      }
+    ],
+    "wall_timing_scope": "Dispatch times include orchestration/model generation/tool/network roundtrips; these have not been subtracted. Case4 first-action timestamp was not recorded. No claim of one-second agent reaction or universal cold-agent compliance."
+  },
+  "privacy_schema": {
+    "window_fields": [
+      "alpha",
+      "app",
+      "app_name",
+      "bounds",
+      "id",
+      "layer",
+      "on_screen",
+      "owner_name",
+      "pid",
+      "spaces",
+      "window_type",
+      "window_type_source",
+      "z_order"
+    ],
+    "content_fields_present": [],
+    "scope": "Live service state schema and polling code; metadata only. No title, URL, document path, body, pixels or key input in cache/API."
+  },
+  "installation_starts_ms": [
+    1223.109,
+    1354.061
+  ]
+}

@@ -132,6 +132,8 @@ def main():
     custom.add_argument("--plan", type=Path, required=True)
     custom.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if args.command == "open":
+        raise ValueError("Generic document opening is disabled: use a controlled application adapter with workspace binding before window creation")
 
     if args.command == "list":
         result = snapshot(args.app, args.windows, args.titles)
@@ -173,49 +175,13 @@ def main():
             selected = [w for w in selected if w["spaces"] == [dest["id"]]]
         if args.command == "move" and not args.windows and args.from_workspace is None:
             raise ValueError("move requires explicit --windows or --from-workspace")
-        if args.command == "open":
-            if len(args.app) != 1:
-                raise ValueError("open requires exactly one --app")
-            files = [str(Path(f).expanduser().resolve(strict=True)) for f in args.file]
-            slot = None
-            if args.slot_of or args.park_workspace:
-                if not args.slot_of or not args.park_workspace or len(files) != 1:
-                    raise ValueError("Use one file with both --slot-of and --park-workspace")
-                slot = next((w for w in selected if w["id"] == args.slot_of and w["spaces"] == [dest["id"]]), None)
-                park = space_at(state, args.park_workspace)
-                if not slot or park["id"] == dest["id"] or park["count"]:
-                    raise ValueError("Slot must be in the destination and the parking workspace must be separate and empty")
-            elif dest["count"] and (not args.arrange_existing or dest["count"] != len(selected)):
-                raise ValueError("Use an empty destination, --slot-of, or --arrange-existing for a workspace containing only the requested app")
-            if args.dry_run:
-                result = {"ok": True, "dry_run": True, "open": files, "app": args.app[0], "workspace": dest["index"], "layout": args.layout}
-                if slot:
-                    result.update(slot=slot["id"], slot_bounds=slot["bounds"], parking_workspace=park["index"])
-                print(json.dumps(result, ensure_ascii=False, indent=2)); return
-            opened = native({"command": "open", "app": args.app[0], "files": files, "toSpace": dest["id"]})
-            state = snapshot(args.app)
-            selected = [w for w in state["windows"] if w["spaces"] == [dest["id"]]]
-            if slot:
-                fresh = [w for w in selected if w["id"] in opened["newWindows"]]
-                if len(fresh) != 1:
-                    raise ValueError("Expected exactly one new window for the selected slot")
-                old_bounds = slot["bounds"]
-                frame = dict(zip(("x", "y", "width", "height"), (old_bounds[k] for k in ("X", "Y", "Width", "Height"))))
-                result = apply_changes([{**identity(slot), "fromSpace": dest["id"], "toSpace": park["id"]},
-                                        {**identity(fresh[0]), "fromSpace": dest["id"], "frame": frame}])
-                result.update(opened_windows=opened["newWindows"], parked_window=slot["id"],
-                              open_context_unchanged=opened["context"] == opened["afterContext"])
-                print(json.dumps(result, ensure_ascii=False, indent=2)); return
-            if not args.arrange_existing:
-                selected = [w for w in selected if w["id"] in opened["newWindows"]]
-            args.main = args.main or opened["newWindows"][0]
         if not selected:
             raise ValueError("No matching ordinary windows in the specified workspace")
         if getattr(args, "main", None):
             if args.main not in [w["id"] for w in selected]:
                 raise ValueError("--main is not one of the selected windows")
             selected.sort(key=lambda w: w["id"] != args.main)
-        if args.command in ("arrange", "open"):
+        if args.command == "arrange":
             frames = rectangles(len(selected), dest["frame"], args.layout, args.ratio, args.gap, args.margin, args.columns)
         elif args.command == "place":
             if len(selected) != 1:
@@ -232,9 +198,6 @@ def main():
                 c["frame"] = f
             changes.append(c)
         result = apply_changes(changes, args.dry_run)
-        if args.command == "open" and not args.dry_run:
-            result["opened_windows"] = opened["newWindows"]
-            result["open_context_unchanged"] = opened["context"] == opened["afterContext"]
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
